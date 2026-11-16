@@ -253,17 +253,20 @@ class LiveCursorManager:
 
                 ico_path = os.path.join(temp_dir, f"nova_live_{st}.ico")
                 cur_path = os.path.join(temp_dir, f"nova_live_{st}.cur")
-                img.save(ico_path)
+                img.save(ico_path, sizes=[(32, 32)])
                 with open(ico_path, "rb") as f:
                     data = bytearray(f.read())
                 # Type = 2 (CUR)
                 data[2] = 2
                 data[3] = 0
-                # Hotspot at (0, 0)
-                data[10] = 0
-                data[11] = 0
-                data[12] = 0
-                data[13] = 0
+                # Set Hotspot to (0, 0) across all icon/cursor directory entries
+                count = int.from_bytes(data[4:6], "little")
+                for i in range(count):
+                    entry_offset = 6 + i * 16
+                    data[entry_offset + 4] = 0  # Hotspot X = 0
+                    data[entry_offset + 5] = 0
+                    data[entry_offset + 6] = 0  # Hotspot Y = 0
+                    data[entry_offset + 7] = 0
                 with open(cur_path, "wb") as f:
                     f.write(data)
                 try:
