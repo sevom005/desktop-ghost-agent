@@ -34,7 +34,8 @@ from workers.subagent_b import (
 )
 from memory.sleep_reflector import (
     REFLECTION_MODEL_CASCADE,
-    _generate_reflection_with_fallback
+    _generate_reflection_with_fallback,
+    synthesize_active_mind_context
 )
 from skills.win32_window_utils import ActiveSpatialContext
 
@@ -231,6 +232,147 @@ class TestUnifiedMemoryAndHygiene(unittest.TestCase):
             self.assertEqual(mock_gen.call_count, 2)
             self.assertEqual(mock_gen.call_args_list[0][1]["model"], "gemini-3.5-flash-lite")
             self.assertEqual(mock_gen.call_args_list[1][1]["model"], "gemini-3.1-flash-lite")
+
+    # ── Test 7: Pillar 5 Upgrade 1 — Active Mind Context Fast-Path ────────────
+
+    def test_active_mind_context_fast_path(self):
+        """Verifies get_system_context_block() returns active_mind_context.md contents when fresh."""
+        manager = UnifiedMemoryManager(memory_dir=self.tmp_dir)
+
+        # Write a synthesized context file
+        active_mind_path = os.path.join(self.tmp_dir, "active_mind_context.md")
+        synthesized_content = "### SYNTHESIZED CONTEXT\n- User: Shvan\n- Top fact: AI and Robotics student"
+        with open(active_mind_path, "w", encoding="utf-8") as f:
+            f.write(synthesized_content)
+
+        # Clear any cache
+        manager._cached_context = ""
+        manager._cache_timestamp = 0.0
+
+        block = manager.get_system_context_block(max_tokens=1200)
+        self.assertEqual(block, synthesized_content, "Fast-path must return synthesized context verbatim.")
+
+    def test_active_mind_context_fallback_on_missing(self):
+        """Verifies fallback to Python slice logic when active_mind_context.md doesn't exist."""
+        manager = UnifiedMemoryManager(memory_dir=self.tmp_dir)
+
+        # Ensure no active_mind_context.md exists
+        active_mind_path = os.path.join(self.tmp_dir, "active_mind_context.md")
+        if os.path.exists(active_mind_path):
+            os.remove(active_mind_path)
+
+        # Clear cache
+        manager._cached_context = ""
+        manager._cache_timestamp = 0.0
+
+        block = manager.get_system_context_block(max_tokens=1200)
+        self.assertIn("CORE IDENTITY & USER PREFERENCES", block,
+                       "Fallback must produce the original Python-assembled context block.")
+
+    def test_active_mind_context_fallback_on_stale(self):
+        """Verifies fallback when active_mind_context.md is older than 24 hours."""
+        manager = UnifiedMemoryManager(memory_dir=self.tmp_dir)
+
+        active_mind_path = os.path.join(self.tmp_dir, "active_mind_context.md")
+        with open(active_mind_path, "w", encoding="utf-8") as f:
+            f.write("### STALE CONTEXT")
+
+        # Set modification time to 25 hours ago
+        stale_time = time.time() - (25 * 3600)
+        os.utime(active_mind_path, (stale_time, stale_time))
+
+        manager._cached_context = ""
+        manager._cache_timestamp = 0.0
+
+        block = manager.get_system_context_block(max_tokens=1200)
+        self.assertIn("CORE IDENTITY & USER PREFERENCES", block,
+                       "Stale (>24h) context must fall back to Python slice logic.")
+
+    # ── Test 8: Pillar 5 Upgrade 2 — Screen Streamer Voice Trigger ───────────
+
+    def test_screen_streamer_voice_trigger(self):
+        """Verifies voice_trigger() sets burst timestamp and affects effective interval."""
+        from live.screen_streamer import ScreenStreamer
+
+        mock_session = MagicMock()
+        streamer = ScreenStreamer(mock_session, fps=1)
+
+        # Before voice trigger: _voice_triggered_at should be 0
+        self.assertEqual(streamer._voice_triggered_at, 0.0)
+
+        # After voice trigger
+        streamer.voice_trigger()
+        self.assertGreater(streamer._voice_triggered_at, 0.0)
+
+        # During burst: effective interval should be ACTIVE_INTERVAL
+        now = time.monotonic()
+        in_burst = (now - streamer._voice_triggered_at) < streamer.BURST_DURATION
+        self.assertTrue(in_burst, "Should be in burst immediately after voice trigger.")
+        effective = streamer.ACTIVE_INTERVAL if in_burst else streamer.STATIC_INTERVAL
+        self.assertEqual(effective, streamer.ACTIVE_INTERVAL)
+
+    def test_screen_streamer_static_interval_after_burst(self):
+        """Verifies effective interval is STATIC_INTERVAL after burst duration expires."""
+        from live.screen_streamer import ScreenStreamer
+
+        mock_session = MagicMock()
+        streamer = ScreenStreamer(mock_session, fps=1)
+
+        # Set voice trigger to far in the past (beyond BURST_DURATION)
+        streamer._voice_triggered_at = time.monotonic() - streamer.BURST_DURATION - 1.0
+
+        now = time.monotonic()
+        in_burst = (now - streamer._voice_triggered_at) < streamer.BURST_DURATION
+        self.assertFalse(in_burst, "Should NOT be in burst after BURST_DURATION expires.")
+        effective = streamer.ACTIVE_INTERVAL if in_burst else streamer.STATIC_INTERVAL
+        self.assertEqual(effective, streamer.STATIC_INTERVAL)
+
+    # ── Test 9: Pillar 5 Upgrade 3 — Mid-Session Milestone Injection ─────────
+
+    def test_session_milestone_injection_wired_in_on_success(self):
+        """Verifies _check_rolling_reflection on_success calls _inject_session_milestone via run_coroutine_threadsafe."""
+        from live.live_bridge import LiveBridge
+
+        bridge = LiveBridge()
+        bridge._loop = MagicMock()
+        bridge._session = MagicMock()
+
+        # Simulate 30+ turns to trigger micro-reflection
+        bridge._session_stream = [f"[USER]: Turn {i}" for i in range(35)]
+        bridge._last_reflected_index = 0
+        bridge._micro_reflection_in_progress = False
+
+        # Mock the trigger_micro_reflection call to capture on_success
+        captured_on_success = {}
+
+        def mock_trigger(chunk, target_index, on_success=None, on_failure=None):
+            captured_on_success['fn'] = on_success
+            mock_thread = MagicMock()
+            mock_thread.is_alive.return_value = False
+            return mock_thread
+
+        with patch("memory.sleep_reflector.trigger_micro_reflection", mock_trigger):
+            bridge._check_rolling_reflection()
+
+        # Verify on_success was captured
+        self.assertIn('fn', captured_on_success, "on_success callback must be passed to trigger_micro_reflection.")
+
+        # Simulate calling on_success with a result
+        mock_result = MagicMock()
+        mock_result.chunk_summary = "Discussed AI architecture and testing."
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_rcs:
+            captured_on_success['fn'](mock_result, 35)
+
+            # Verify chunk_summary was appended
+            self.assertIn("Discussed AI architecture and testing.", bridge._chunk_summaries)
+
+            # Verify run_coroutine_threadsafe was called for milestone injection
+            mock_rcs.assert_called_once()
+            # The first arg should be the coroutine from _inject_session_milestone
+            args = mock_rcs.call_args[0]
+            self.assertEqual(args[1], bridge._loop, "Must use bridge._loop for coroutine scheduling.")
+            args[0].close()  # Clean up coroutine to prevent unawaited warning
 
 
 if __name__ == "__main__":

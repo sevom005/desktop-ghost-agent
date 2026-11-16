@@ -65,6 +65,11 @@ class ScreenStreamer:
     PRECISION_QUALITY = 88
     HEARTBEAT_SEC     = 6.0   # Send refresh frame every 6s even when static
 
+    # Pillar 5 Upgrade 2: Motion-adaptive streaming intervals
+    STATIC_INTERVAL   = 5.0   # 0.2 FPS when nothing is moving on screen
+    ACTIVE_INTERVAL   = 1.0   # 1.0 FPS during voice-triggered burst
+    BURST_DURATION    = 10.0  # Seconds to stay at 1 FPS after voice trigger
+
     def __init__(self, session, fps: int = 1):
         """
         :param session: Active gemini-3.8-live AsyncSession from live_bridge.
@@ -79,6 +84,8 @@ class ScreenStreamer:
         self._last_thumb: Optional[bytes] = None
         self._frames_sent    = 0
         self._frames_skipped = 0
+        # Pillar 5 Upgrade 2: Voice-triggered burst mode
+        self._voice_triggered_at: float = 0.0
 
     # ── Control API ────────────────────────────────────────────────────────────
 
@@ -89,6 +96,14 @@ class ScreenStreamer:
     def set_session(self, session) -> None:
         """Updates the active Gemini Live session reference on auto-reconnect."""
         self._session = session
+
+    def voice_trigger(self) -> None:
+        """
+        Pillar 5 Upgrade 2: Call when user starts speaking.
+        Boosts screen capture to 1 FPS (ACTIVE_INTERVAL) for BURST_DURATION seconds,
+        then automatically drops back to 0.2 FPS (STATIC_INTERVAL) when static.
+        """
+        self._voice_triggered_at = time.monotonic()
 
     def pause(self) -> None:
         """
@@ -117,18 +132,23 @@ class ScreenStreamer:
 
     async def run(self) -> None:
         """
-        Background task: captures and sends desktop frames at the configured FPS.
+        Background task: captures and sends desktop frames at adaptive FPS.
+        Pillar 5 Upgrade 2: Uses STATIC_INTERVAL (0.2 FPS) when idle,
+        ACTIVE_INTERVAL (1 FPS) during voice-triggered burst.
         Run as: asyncio.create_task(streamer.run())
         """
         self._running = True
-        print(f"[SCREEN] Streamer started at {1/self._interval:.1f} FPS "
-              f"(quality={self.STREAM_QUALITY})")
+        print(f"[SCREEN] Streamer started (adaptive: {1/self.ACTIVE_INTERVAL:.1f} FPS active, "
+              f"{1/self.STATIC_INTERVAL:.1f} FPS static, quality={self.STREAM_QUALITY})")
 
         while self._running:
             now = time.monotonic()
+            # Pillar 5: Dynamic interval based on voice activity
+            in_burst = (now - self._voice_triggered_at) < self.BURST_DURATION
+            effective_interval = self.ACTIVE_INTERVAL if in_burst else self.STATIC_INTERVAL
             elapsed = now - self._last_send_time
 
-            if not self._paused and elapsed >= self._interval:
+            if not self._paused and elapsed >= effective_interval:
                 await self._capture_and_send(quality=self.STREAM_QUALITY)
                 self._last_send_time = time.monotonic()
             else:

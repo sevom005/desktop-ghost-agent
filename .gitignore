@@ -7,6 +7,8 @@
 memory/*.json
 memory/*.processing_*
 memory/wal_*.tmp
+memory/active_mind_context.md
+memory/*.tmp*
 
 # Python bytecode & caches
 __pycache__/

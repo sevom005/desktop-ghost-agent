@@ -19,8 +19,9 @@ Key Capabilities:
 
 import os
 import json
+import time
 import threading
-from typing import Optional, List, Literal, Tuple, Callable
+from typing import Any, Optional, List, Literal, Tuple, Callable
 from pydantic import BaseModel, Field
 
 from google import genai
@@ -141,6 +142,88 @@ class MicroReflectionResult(BaseModel):
     )
 
 
+# ── Active Mind Context Synthesizer (Pillar 5 Upgrade 1) ─────────────────────
+
+_ACTIVE_MIND_PATH = os.path.join(_MEMORY_DIR, "active_mind_context.md")
+
+
+def synthesize_active_mind_context(memory_instance=None) -> bool:
+    """
+    Pillar 5 Upgrade 1: Pre-computes a smart, decay-ranked Active Mind Context
+    using gemini-3.5-flash-lite. Written to memory/active_mind_context.md so
+    LiveBridge reads it at 0ms startup latency with no API call.
+
+    Called after every successful reflection (micro + shutdown).
+    """
+    if memory_instance is None:
+        from memory.ghost_memory import get_ghost_memory
+        memory_instance = get_ghost_memory()
+        memory_instance.load()
+
+    try:
+        # Gather all memory stores
+        all_facts = memory_instance.get_existing_facts_for_prompt()
+        all_habits = memory_instance._habits or []
+        profile = memory_instance.get_profile()
+        spark = memory_instance._companion.get("greeting_spark", {})
+
+        facts_json = json.dumps(all_facts, indent=2, ensure_ascii=False) if all_facts else "[]"
+        habits_json = json.dumps(
+            [{"trigger": h.get("trigger", ""), "correction": h.get("correction", "")}
+             for h in all_habits if isinstance(h, dict) and h.get("trigger")],
+            indent=2, ensure_ascii=False
+        ) if all_habits else "[]"
+        spark_json = json.dumps(spark, indent=2, ensure_ascii=False) if spark else "{}"
+
+        prompt = f"""You are Nova's pre-session mind synthesizer. Given the FULL memory below, write a
+600-token ACTIVE MIND CONTEXT block in markdown that covers:
+- Top 8 most important and recent facts about Shvan (rank by importance × recency — prefer high-importance recent facts over low-importance old ones)
+- Top 5 most critical procedural habit corrections (the ones that prevent repeated mistakes)
+- Current project status and open thread from Greeting Spark
+- User profile summary (name, OS, communication style)
+
+Format as a clean markdown block with ### headers. Be concise and information-dense.
+Output ONLY the markdown block — no preamble, no explanation, no wrapping fences.
+
+══ USER PROFILE ══
+{json.dumps(profile, indent=2, ensure_ascii=False)}
+
+══ ALL FACTS ({len(all_facts)} total) ══
+{facts_json}
+
+══ ALL HABIT CORRECTIONS ({len(all_habits)} total) ══
+{habits_json}
+
+══ GREETING SPARK (last session context) ══
+{spark_json}
+"""
+
+        client = genai.Client()
+        response = _generate_reflection_with_fallback(
+            client=client,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+            ),
+            tag="[ACTIVE MIND SYNTHESIS]"
+        )
+
+        if response and response.text:
+            context_text = response.text.strip()
+            # Atomic write
+            tmp_path = f"{_ACTIVE_MIND_PATH}.tmp_{os.getpid()}_{threading.get_ident()}"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(context_text)
+            os.replace(tmp_path, _ACTIVE_MIND_PATH)
+            print(f"[SLEEP REFLECTOR] ✅ Active Mind Context synthesized → memory/active_mind_context.md ({len(context_text)} chars)")
+            return True
+
+    except Exception as e:
+        print(f"[SLEEP REFLECTOR] ⚠️ Active Mind Context synthesis failed (non-fatal): {e}")
+
+    return False
+
+
 # ── Write-Ahead Log (WAL) Helpers ────────────────────────────────────────────
 
 def dump_pending_session(
@@ -240,6 +323,8 @@ Your goal is to extract high-level facts, habit corrections, and a 1-sentence su
                 memory_instance.apply_micro_reflection(parsed_data.model_dump())
                 summary_preview = parsed_data.chunk_summary[:80] + "..." if len(parsed_data.chunk_summary) > 80 else parsed_data.chunk_summary
                 print(f"[MICRO REFLECTION] Rolling reflection complete ({len(parsed_data.new_facts)} new facts, {len(parsed_data.new_habits)} habits). Summary: {summary_preview}")
+                # Pillar 5 Upgrade 1: Refresh Active Mind Context after new facts/habits
+                synthesize_active_mind_context(memory_instance)
                 return True, parsed_data
         except Exception as e:
             if attempt == 0:
@@ -368,6 +453,8 @@ Your goal is to extract long-term memory updates based on Stanford Generative Ag
         if parsed_data:
             memory_instance.apply_reflection(parsed_data.model_dump())
             print(f"[SLEEP REFLECTOR] Subconscious reflection complete ({len(parsed_data.new_facts)} new facts, {len(parsed_data.new_habits)} habits).")
+            # Pillar 5 Upgrade 1: Pre-compute Active Mind Context for next session
+            synthesize_active_mind_context(memory_instance)
             return True
 
     except Exception as e:

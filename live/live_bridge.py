@@ -132,6 +132,7 @@ class LiveBridge:
         self._running = False
         self._stop_event: Optional[asyncio.Event] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._session = None  # Pillar 5 Upgrade 3: active Live session reference for milestone injection
         self.audio_io: Optional[AudioIO] = None
         self.screen_streamer: Optional[ScreenStreamer] = None
         self.should_sleep = False
@@ -232,6 +233,35 @@ class LiveBridge:
                 self._check_rolling_reflection()
             self._current_ghost_turn.clear()
 
+    # ── Pillar 5 Upgrade 3: Mid-Session Memory Pinning ─────────────────────────
+
+    async def _inject_session_milestone(self, summary: str) -> None:
+        """
+        Injects a chunk summary into the live Gemini session as a silent pinned milestone.
+        Uses turn_complete=False so Nova does NOT speak a response.
+        This ensures chunk context survives sliding window compression.
+        """
+        import datetime
+        ts = datetime.datetime.now().strftime("%H:%M")
+        try:
+            if self._session:
+                await self._session.send_client_content(
+                    turns=[
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part.from_text(
+                                    text=f"[SESSION MILESTONE — {ts}]: {summary}"
+                                )
+                            ]
+                        )
+                    ],
+                    turn_complete=False
+                )
+                print(f"[MEMORY PIN] ✅ Session milestone injected: {summary[:60]}...")
+        except Exception as e:
+            print(f"[MEMORY PIN] Warning: milestone injection failed — {e}")
+
     def _check_rolling_reflection(self) -> None:
         """
         Argon Fix #1, #2, #3: Checks if unreflected turns exceed threshold (30).
@@ -252,6 +282,12 @@ class LiveBridge:
                 self._micro_reflection_in_progress = False
                 if result and result.chunk_summary:
                     self._chunk_summaries.append(result.chunk_summary)
+                    # Pillar 5 Upgrade 3: Pin the summary back into the live session
+                    if self._loop and self._session:
+                        asyncio.run_coroutine_threadsafe(
+                            self._inject_session_milestone(result.chunk_summary),
+                            self._loop
+                        )
 
             def on_failure() -> None:
                 self._micro_reflection_in_progress = False
@@ -378,6 +414,7 @@ class LiveBridge:
                     sys.stdout.flush()
 
                     async with client.aio.live.connect(model=active_model, config=config) as session:
+                        self._session = session  # Pillar 5 Upgrade 3: store for milestone injection
                         print("[LIVE API] Connected! Real-time voice session is ACTIVE.")
                         if self.on_status:
                             self.on_status("active")
@@ -619,6 +656,9 @@ class LiveBridge:
                             text = content.input_transcription.text.strip()
                             if text:
                                 self._append_user_speech(text)
+                                # Pillar 5 Upgrade 2: Burst screen capture on voice activity
+                                if self.screen_streamer:
+                                    self.screen_streamer.voice_trigger()
 
                         # Ghost speech transcription (chunk streaming)
                         if getattr(content, "output_transcription", None) and content.output_transcription.text:

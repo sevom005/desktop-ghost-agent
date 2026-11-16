@@ -132,6 +132,10 @@ class UnifiedMemoryManager:
         """
         Assembles a prioritized markdown block containing Tier 1, 2, and 3 memory.
         Enforces a strict token budget (~4 chars per token) to keep Gemini Live latency low.
+
+        Pillar 5 Upgrade 1: If memory/active_mind_context.md exists and is <24h old,
+        returns its pre-computed LLM-synthesized content directly (0ms, no API call).
+        Falls back to the original Python slice logic on first run or stale file.
         """
         now = time.monotonic()
         # Fast path if cached and no spatial context override with matching budget
@@ -144,6 +148,22 @@ class UnifiedMemoryManager:
             return self._cached_context
 
         with self._lock:
+            # ── Pillar 5 Upgrade 1: LLM-synthesized fast-path ──────────────
+            _ACTIVE_MIND_PATH = os.path.join(self.memory_dir, "active_mind_context.md")
+            if spatial_context is None and os.path.exists(_ACTIVE_MIND_PATH):
+                try:
+                    age_hours = (time.time() - os.path.getmtime(_ACTIVE_MIND_PATH)) / 3600
+                    if age_hours < 24:
+                        with open(_ACTIVE_MIND_PATH, "r", encoding="utf-8") as _f:
+                            synthesized = _f.read().strip()
+                        if synthesized:
+                            self._cached_context = synthesized
+                            self._cached_max_tokens = max_tokens
+                            self._cache_timestamp = now
+                            return synthesized
+                except Exception:
+                    pass  # Fall through to Python slice logic
+            # ── Fallback: original Python slice logic (first run, no file) ──
             # Approx character budget: max_tokens * 4 chars
             char_budget = max_tokens * 4
             sections: List[str] = []

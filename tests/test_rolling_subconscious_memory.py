@@ -234,7 +234,11 @@ class TestRollingSubconsciousMemory(unittest.TestCase):
                     "mood_hint": "Satisfied"
                 }
             )
-            mock_client.models.generate_content.return_value = mock_response
+            # Pillar 5: synthesize_active_mind_context makes a 2nd generate_content call after reflection.
+            # Return reflection response for 1st call, a plain text mock for 2nd (synthesis).
+            mock_synthesis_response = MagicMock()
+            mock_synthesis_response.text = "### SYNTHESIZED CONTEXT\n- Test"
+            mock_client.models.generate_content.side_effect = [mock_response, mock_synthesis_response]
 
             from memory.sleep_reflector import execute_reflection_sync
             success = execute_reflection_sync(
@@ -244,8 +248,8 @@ class TestRollingSubconsciousMemory(unittest.TestCase):
             )
             self.assertTrue(success)
 
-            # Inspect the prompt passed to Gemini
-            call_kwargs = mock_client.models.generate_content.call_args[1]
+            # Inspect the prompt passed to Gemini — use first call (reflection), not last (synthesis)
+            call_kwargs = mock_client.models.generate_content.call_args_list[0][1]
             prompt = call_kwargs["contents"]
 
             # Must contain both chunk summaries and tail
