@@ -1,0 +1,44 @@
+# Environment & API Keys (CRITICAL: NEVER COMMIT)
+.env
+.env.*
+!.env.example
+
+# Local Agent Runtime Memory & User Session History
+memory/*.json
+memory/*.processing_*
+memory/wal_*.tmp
+
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Testing & Linting
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Operating System & Editors
+.DS_Store
+Thumbs.db
+ehthumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Temporary files & backups
+*.bak
+*.tmp
+test_*.png
+
+# Third-party cloned research sub-repos
+research/Awesome-Agentic-Reasoning/
